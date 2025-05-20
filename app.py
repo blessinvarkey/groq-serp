@@ -187,7 +187,7 @@ turn = st.session_state.last_turn
 if turn:
     # Main UI
     # st.subheader("✅ Final Answer")
-    # st.write(turn["final_answer"])
+    st.write(turn["final_answer"])
 
     # Debug sidebar
     if debug_mode:
