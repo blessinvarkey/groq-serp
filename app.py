@@ -9,7 +9,7 @@ from json.decoder import JSONDecodeError
 # Page config
 # -------------
 st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
-st.title("Groq-SERP-llama-3.3-70b Chatbot with Conditional PII Masking")
+st.title("Groq-SERP-llama-3.3-70b Chatbot with PII Masking & SERP Debug")
 
 # -------------
 # Load API keys
@@ -53,7 +53,7 @@ def mask_pii(text):
     """
     Mask only private or sensitive PII in `text`, leaving
     public or widely known info untouched.
-    Returns (masked_text, mapping).
+    Returns masked_text and mapping.
     """
     mask_prompt = (
         "Identify and mask any **private or sensitive** PII in the following text.  \n"
@@ -135,39 +135,37 @@ def on_enter():
     # 1. Mask PII
     masked_query, pii_map = mask_pii(user_msg)
 
-    # 2. SERP search
+    # 2. SERP search on masked query
     with st.spinner("Searching external data…"):
-        search_results, serp_url, serp_params = serp_search(masked_query)
+        serp_results, serp_url, serp_params = serp_search(masked_query)
 
     # 3. Build LLM prompt
     llm_prompt = (
         "You are a helpful assistant. Use the following search results to answer the question.\n"
-        f"Search results (JSON): {json.dumps(search_results)}\n\n"
+        f"Search results (JSON): {json.dumps(serp_results)}\n\n"
         f"Question: {masked_query}\n\n"
         "Please provide a clear, accurate, and fully scoped answer."
     )
 
-    # 4. Get masked answer
+    # 4. Get final answer (unmasked)
     with st.spinner("Generating answer…"):
         try:
             masked_answer = call_llm(llm_prompt)
         except Exception as e:
             masked_answer = f"Error from GROQ: {e}"
-
-    # 5. Unmask
     final_answer = unmask_pii(masked_answer, pii_map)
 
-    # 6. Store turn
+    # 5. Store this turn’s debug info
     st.session_state.last_turn = {
         "masked_query": masked_query,
         "pii_map": pii_map,
         "serp_url": serp_url,
         "serp_params": serp_params,
-        "masked_answer": masked_answer,
+        "serp_results": serp_results,
         "final_answer": final_answer
     }
 
-    # 7. Clear input
+    # 6. Clear input
     st.session_state.user_input = ""
 
 # --------------------------
@@ -196,8 +194,8 @@ if turn:
     st.write(f"URL: {turn['serp_url']}")
     st.json(turn["serp_params"])
 
-    st.subheader("🤖 Masked Answer")
-    st.write(turn["masked_answer"])
+    st.subheader("📦 Serper API Response")
+    st.json(turn["serp_results"])
 
     st.subheader("✅ Final Unmasked Answer")
     st.write(turn["final_answer"])
