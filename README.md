@@ -6,7 +6,7 @@ A conversational assistant built with Streamlit, Serper Search API, and GROQ LLM
 
 ## Features
 
-* **PII Masking**: Combines regex, NER, and LLM prompts to replace private data (emails, phone numbers, IDs, names) with placeholders.
+* **PII Masking**: Combines regex and LLM prompts to replace private data (emails, phone numbers, IDs, names) with placeholders.
 * **Serper Web Search**: Real‑time search via Serper REST API.
 * **GROQ LLM Integration**: Answers built from search results using `llama-3.3-70b-versatile`.
 * **Rate Limit Handling**: Exponential backoff on GROQ rate limits.
