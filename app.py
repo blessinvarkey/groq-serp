@@ -9,7 +9,18 @@ from json.decoder import JSONDecodeError
 # Page config
 # -------------
 st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
-st.title("Groq-SERP-llama-3.3-70b Chatbot with PII Masking")
+
+# --------------------------
+# Debug / Admin toggle
+# --------------------------
+debug_mode = st.sidebar.checkbox("Show debug info", value=False)
+
+if debug_mode:
+    st.sidebar.markdown("### Global PII Mapping")
+    if "global_mapping" in st.session_state:
+        st.sidebar.json(st.session_state.global_mapping)
+    else:
+        st.sidebar.write("⏳ none yet")
 
 # -------------
 # Load API keys
@@ -27,7 +38,6 @@ else:
 # Helper functions
 # ----------------
 def serp_search(query):
-    """Call Serper REST API and return JSON results + URL + params."""
     url = "https://google.serper.dev/search"
     headers = {"X-API-KEY": SERPER_API_KEY}
     params = {"q": query}
@@ -36,166 +46,159 @@ def serp_search(query):
     return resp.json(), url, params
 
 def call_llm(prompt, max_tokens=4096):
-    """Route prompt to GROQ LLM; raise error if client missing."""
     if not groq_client:
-        return "Error: GROQ_API_KEY not provided."
-    response = groq_client.chat.completions.create(
+        return "Error: missing GROQ_API_KEY."
+    resp = groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role":"user","content":prompt}],
         max_tokens=max_tokens
     )
-    return response.choices[0].message.content
+    return resp.choices[0].message.content
+
+# ---------------------------------
+# Persistent mapping across turns
+# ---------------------------------
+if "global_mapping" not in st.session_state:
+    st.session_state.global_mapping = {}
+if "placeholder_counter" not in st.session_state:
+    st.session_state.placeholder_counter = {"NAME":0, "EMAIL":0, "PHONE":0, "ID":0}
+
+def _next_placeholder(kind):
+    st.session_state.placeholder_counter[kind] += 1
+    return f"<{kind}_{st.session_state.placeholder_counter[kind]}>"
 
 # --------------------------------
-# PII-masking / unmasking helpers
+# Combined Regex + LLM Masking
 # --------------------------------
 def mask_pii(text):
-    """
-    Mask only private or sensitive PII in `text`, leaving
-    public or widely known info untouched.
-    Returns masked_text and mapping.
-    """
-    mask_prompt = (
-        "Identify and mask any **private or sensitive** PII in the following text.  \n"
-        "- **Do NOT** mask names or details that are publicly known (e.g. public figures, "
-        "company names, known landmarks).  \n"
-        "- Only mask personal emails, personal phone numbers, private addresses, "
-        "and other non-public identifiers.  \n\n"
-        f"Text:\n'''{text}'''\n\n"
-        "Return *only* a JSON object with keys:\n"
-        "  • masked_text  \n"
-        "  • mapping  \n"
-        "No extra explanation."
-    )
-    raw = call_llm(mask_prompt)
+    # 1) Deterministic regex for email/phone/IDs first
+    mapping = st.session_state.global_mapping
+    masked = text
 
-    # Try direct JSON parse
+    # email
+    for match in re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text):
+        if match not in mapping.values():
+            ph = _next_placeholder("EMAIL")
+            mapping[ph] = match
+        else:
+            # reuse existing placeholder
+            ph = next(k for k,v in mapping.items() if v == match)
+        masked = masked.replace(match, ph)
+
+    # phone numbers (simple)
+    for match in re.findall(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", text):
+        if match not in mapping.values():
+            ph = _next_placeholder("PHONE")
+            mapping[ph] = match
+        else:
+            ph = next(k for k,v in mapping.items() if v == match)
+        masked = masked.replace(match, ph)
+
+    # long numeric IDs
+    for match in re.findall(r"\b\d{4,}\b", text):
+        if match not in mapping.values():
+            ph = _next_placeholder("ID")
+            mapping[ph] = match
+        else:
+            ph = next(k for k,v in mapping.items() if v == match)
+        masked = masked.replace(match, ph)
+
+    # 2) Ask LLM to catch anything else private/sensitive
+    llm_prompt = (
+        "Mask any *other* private or sensitive PII in this text, "
+        "but leave public figures/names untouched.  \n\n"
+        f"Text:\n'''{masked}'''\n\n"
+        "Return *only* JSON with keys `masked_text` and `mapping`."
+    )
+    raw = call_llm(llm_prompt)
+
+    # try parsing JSON
     try:
         data = json.loads(raw)
     except JSONDecodeError:
-        # Fallback: extract first {...} block
-        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
         if not m:
-            st.error("PII masking JSON parse failed. Raw output:")
-            st.code(raw)
+            if debug_mode:
+                st.error("LLM mask raw:")
+                st.code(raw)
             st.stop()
-        try:
-            data = json.loads(m.group())
-        except JSONDecodeError:
-            st.error("PII masking JSON parse failed after regex. Raw JSON:")
-            st.code(m.group())
-            st.stop()
+        data = json.loads(m.group())
 
-    # Verify expected structure
-    if "masked_text" not in data or "mapping" not in data:
-        st.error("PII mask JSON missing required keys. Parsed data:")
-        st.json(data)
-        st.stop()
-
+    # merge LLM mapping into global
+    for ph, orig in data["mapping"].items():
+        if ph not in mapping:
+            mapping[ph] = orig
     masked = data["masked_text"]
-    mapping = data["mapping"]
 
-    # Fallback regex mask if mapping is empty
-    if not mapping:
-        # mask names like First Last
-        nm = re.search(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-        if nm:
-            placeholder = "<NAME_1>"
-            mapping[placeholder] = nm.group(1)
-            masked = masked.replace(nm.group(1), placeholder)
-        # mask any 4+ digit sequence
-        idm = re.search(r'\b(\d{4,})\b', text)
-        if idm:
-            placeholder = "<ID_1>"
-            mapping[placeholder] = idm.group(1)
-            masked = masked.replace(idm.group(1), placeholder)
+    # return masked + the slice of mapping for *this* turn
+    # (needed later to unmask)
+    return masked, {k:v for k,v in mapping.items() if v in raw or v in text}
 
-    return masked, mapping
-
-def unmask_pii(text, mapping):
-    """Restore placeholders back to the original PII."""
-    for ph, orig in mapping.items():
+def unmask_pii(text, turn_map):
+    for ph, orig in turn_map.items():
         text = text.replace(ph, orig)
     return text
 
 # -------------------------
-# Initialize last-turn holder
+# Single-turn holder
 # -------------------------
 if "last_turn" not in st.session_state:
     st.session_state.last_turn = None
 
-# -------------------------------------------------
-# Callback: run when user presses Enter in textbox
-# -------------------------------------------------
 def on_enter():
-    user_msg = st.session_state.user_input.strip()
-    if not user_msg:
+    user_input = st.session_state.user_input.strip()
+    if not user_input:
         return
 
-    # 1. Mask PII
-    masked_query, pii_map = mask_pii(user_msg)
+    # mask
+    masked_q, turn_map = mask_pii(user_input)
 
-    # 2. SERP search on masked query
-    with st.spinner("Searching external data…"):
-        serp_results, serp_url, serp_params = serp_search(masked_query)
+    # search
+    serp_res, serp_url, serp_params = serp_search(masked_q)
 
-    # 3. Build LLM prompt
-    llm_prompt = (
-        "You are a helpful assistant. Use the following search results to answer the question.\n"
-        f"Search results (JSON): {json.dumps(serp_results)}\n\n"
-        f"Question: {masked_query}\n\n"
-        "Please provide a clear, accurate, and fully scoped answer."
+    # LLM answer
+    prompt = (
+        "You are a helpful assistant. Use these results:\n"
+        f"{json.dumps(serp_res)}\n\n"
+        f"Question: {masked_q}"
     )
+    masked_ans = call_llm(prompt)
+    final = unmask_pii(masked_ans, turn_map)
 
-    # 4. Get final answer (unmasked)
-    with st.spinner("Generating answer…"):
-        try:
-            masked_answer = call_llm(llm_prompt)
-        except Exception as e:
-            masked_answer = f"Error from GROQ: {e}"
-    final_answer = unmask_pii(masked_answer, pii_map)
-
-    # 5. Store this turn’s debug info
     st.session_state.last_turn = {
-        "masked_query": masked_query,
-        "pii_map": pii_map,
+        "masked_query": masked_q,
+        "turn_map": turn_map,
         "serp_url": serp_url,
         "serp_params": serp_params,
-        "serp_results": serp_results,
-        "final_answer": final_answer
+        "serp_response": serp_res,
+        "final_answer": final
     }
-
-    # 6. Clear input
     st.session_state.user_input = ""
 
 # --------------------------
-# Input box (Enter-to-send)
+# UI: only current turn
 # --------------------------
 st.text_input(
-    label="",
-    key="user_input",
+    "", key="user_input",
     on_change=on_enter,
     placeholder="Type your message and press Enter…"
 )
 
-# --------------------------
-# Render only the most recent turn
-# --------------------------
 turn = st.session_state.last_turn
 if turn:
-    st.markdown("---")
     st.subheader("🔒 Masked Query")
     st.write(turn["masked_query"])
 
-    st.subheader("🗺️ PII Mapping")
-    st.json(turn["pii_map"])
+    if debug_mode:
+        st.subheader("🗺️ This Turn’s Mapping")
+        st.json(turn["turn_map"])
 
-    st.subheader("🔎 Serper API Request")
-    st.write(f"URL: {turn['serp_url']}")
+    st.subheader("🔎 SERP API Request")
+    st.write(turn["serp_url"])
     st.json(turn["serp_params"])
 
-    st.subheader("📦 Serper API Response")
-    st.json(turn["serp_results"])
+    st.subheader("📦 SERP API Response")
+    st.json(turn["serp_response"])
 
-    st.subheader("✅ Final Unmasked Answer")
+    st.subheader("✅ Final Answer")
     st.write(turn["final_answer"])
