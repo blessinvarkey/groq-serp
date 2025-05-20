@@ -2,12 +2,14 @@ import streamlit as st
 import os
 import requests
 import json
+import re
+from json.decoder import JSONDecodeError
 
 # -------------
 # Page config
 # -------------
-st.set_page_config(page_title="GGroq-SERP-llama-3.3-70b Chatbot with PII Masking Demo", layout="wide")
-st.title("Groq-SERP-llama-3.3-70b Chatbot with PII Masking Demo")
+st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
+st.title("Groq-SERP-llama-3.3-70b Chatbot with PII Masking Debug")
 
 # -------------
 # Load API keys
@@ -25,6 +27,7 @@ else:
 # Helper functions
 # ----------------
 def serp_search(query: str) -> dict:
+    """Call Serper REST API and return JSON results."""
     url = "https://google.serper.dev/search"
     headers = {"X-API-KEY": SERPER_API_KEY}
     params = {"q": query}
@@ -33,6 +36,7 @@ def serp_search(query: str) -> dict:
     return resp.json()
 
 def call_llm(prompt: str, max_tokens: int = 4096) -> str:
+    """Route prompt to GROQ LLM; raise error if client missing."""
     if not groq_client:
         return "Error: GROQ_API_KEY not provided."
     response = groq_client.chat.completions.create(
@@ -46,26 +50,53 @@ def call_llm(prompt: str, max_tokens: int = 4096) -> str:
 # PII-masking / unmasking helpers
 # --------------------------------
 def mask_pii(text: str) -> tuple[str, dict]:
+    """Ask the LLM to mask PII, then extract and parse the JSON it returns."""
     mask_prompt = (
         "Identify and mask any PII in the following text. "
         "Replace them with placeholders like <NAME_1>, <EMAIL_1>, <PHONE_1>, etc.\n\n"
         f"Text:\n'''{text}'''\n\n"
-        "Return **only** a JSON string with keys `masked_text` and `mapping`."
+        "⚠️ Return *only* a JSON object with keys `masked_text` and `mapping`. "
+        "No extra explanation."
     )
     raw = call_llm(mask_prompt)
-    data = json.loads(raw)
+
+    # Try direct JSON parse
+    try:
+        data = json.loads(raw)
+    except JSONDecodeError:
+        # Fallback: extract the first {...} block
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not m:
+            st.error("PII masking JSON parse failed. Raw output:")
+            st.code(raw)
+            raise
+        try:
+            data = json.loads(m.group())
+        except JSONDecodeError:
+            st.error("PII masking JSON parse failed even after regex. Raw JSON:")
+            st.code(m.group())
+            raise
+
+    # Verify expected structure
+    if "masked_text" not in data or "mapping" not in data:
+        st.error("PII mask JSON missing required keys. Parsed data:")
+        st.json(data)
+        raise ValueError("Unexpected PII mask format")
+
     return data["masked_text"], data["mapping"]
 
 def unmask_pii(text: str, mapping: dict) -> str:
+    """Restore placeholders in `text` back to the original PII."""
     for placeholder, original in mapping.items():
         text = text.replace(placeholder, original)
     return text
 
 # -------------------------
-# Initialize session state
+# Initialize chat history
 # -------------------------
+# We only store the assistant’s replies plus debug info
 if "history" not in st.session_state:
-    st.session_state.history = []  # list of dicts with keys: masked_query, pii_map, masked_answer, final_answer
+    st.session_state.history = []  # list of dicts
 
 # -------------------------------------------------
 # Callback: run when user presses Enter in textbox
@@ -78,11 +109,11 @@ def on_enter():
     # 1. Mask user PII
     masked_query, pii_map = mask_pii(user_msg)
 
-    # 2. Search on masked query
+    # 2. Perform external search
     with st.spinner("Searching external data…"):
         search_results = serp_search(masked_query)
 
-    # 3. Build prompt with masked_query
+    # 3. Build LLM prompt with masked_query
     llm_prompt = (
         "You are a helpful assistant. Use the following search results to answer the question.\n"
         f"Search results (JSON): {json.dumps(search_results)}\n\n"
@@ -100,7 +131,7 @@ def on_enter():
     # 5. Unmask the answer
     final_answer = unmask_pii(masked_answer, pii_map)
 
-    # 6. Save this turn in history
+    # 6. Save debug info and final reply
     st.session_state.history.append({
         "masked_query": masked_query,
         "pii_map": pii_map,
@@ -122,7 +153,7 @@ st.text_input(
 )
 
 # --------------------------
-# Render history with mapping
+# Render history with debug
 # --------------------------
 for turn in st.session_state.history:
     st.markdown("---")
