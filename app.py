@@ -9,7 +9,7 @@ from json.decoder import JSONDecodeError
 # Page config
 # -------------
 st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
-st.title("Groq-SERP-llama-3.3-70b Chatbot with PII Masking Debug")
+st.title("Groq-SERP-llama-3.3-70b Chatbot with PII Masking & SERP Debug")
 
 # -------------
 # Load API keys
@@ -33,7 +33,7 @@ def serp_search(query: str) -> dict:
     params = {"q": query}
     resp = requests.get(url, headers=headers, params=params)
     resp.raise_for_status()
-    return resp.json()
+    return resp.json(), url, params
 
 def call_llm(prompt: str, max_tokens: int = 4096) -> str:
     """Route prompt to GROQ LLM; raise error if client missing."""
@@ -92,11 +92,10 @@ def unmask_pii(text: str, mapping: dict) -> str:
     return text
 
 # -------------------------
-# Initialize chat history
+# Initialize last-turn holder
 # -------------------------
-# We only store the assistant’s replies plus debug info
-if "history" not in st.session_state:
-    st.session_state.history = []  # list of dicts
+if "last_turn" not in st.session_state:
+    st.session_state.last_turn = None
 
 # -------------------------------------------------
 # Callback: run when user presses Enter in textbox
@@ -111,7 +110,7 @@ def on_enter():
 
     # 2. Perform external search
     with st.spinner("Searching external data…"):
-        search_results = serp_search(masked_query)
+        search_results, serp_url, serp_params = serp_search(masked_query)
 
     # 3. Build LLM prompt with masked_query
     llm_prompt = (
@@ -131,13 +130,15 @@ def on_enter():
     # 5. Unmask the answer
     final_answer = unmask_pii(masked_answer, pii_map)
 
-    # 6. Save debug info and final reply
-    st.session_state.history.append({
+    # 6. Save all debug info for this turn only
+    st.session_state.last_turn = {
         "masked_query": masked_query,
         "pii_map": pii_map,
+        "serp_url": serp_url,
+        "serp_params": serp_params,
         "masked_answer": masked_answer,
         "final_answer": final_answer
-    })
+    }
 
     # 7. Clear input
     st.session_state.user_input = ""
@@ -153,15 +154,21 @@ st.text_input(
 )
 
 # --------------------------
-# Render history with debug
+# Render only the most recent turn
 # --------------------------
-for turn in st.session_state.history:
+if st.session_state.last_turn:
+    turn = st.session_state.last_turn
+
     st.markdown("---")
     st.subheader("🔒 Masked Query")
     st.write(turn["masked_query"])
 
     st.subheader("🗺️ PII Mapping")
     st.json(turn["pii_map"])
+
+    st.subheader("🔎 Serper API Request")
+    st.write(f"URL: {turn['serp_url']}")
+    st.json(turn["serp_params"])
 
     st.subheader("🤖 Masked Answer")
     st.write(turn["masked_answer"])
