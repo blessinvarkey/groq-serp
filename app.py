@@ -192,9 +192,6 @@ if turn:
     if debug_mode:
         st.subheader("🗺️ This Turn’s Mapping")
         st.json(turn["turn_map"])
-
-    st.subheader("✅ Final Answer")
-    st.write(turn["final_answer"])
     
     st.subheader("🔎 SERP API Request")
     st.write(turn["serp_url"])
@@ -202,4 +199,7 @@ if turn:
 
     st.subheader("📦 SERP API Response")
     st.json(turn["serp_response"])
+
+    st.subheader("✅ Final Answer")
+    st.write(turn["final_answer"])
 
