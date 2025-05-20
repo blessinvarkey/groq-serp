@@ -9,7 +9,7 @@ from json.decoder import JSONDecodeError
 # Page config
 # -------------
 st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
-st.title("Groq-SERP-llama-3.3-70b Chatbot with PII Masking & SERP Debug")
+st.title("Groq-SERP-llama-3.3-70b Chatbot with Conditional PII Masking")
 
 # -------------
 # Load API keys
@@ -27,7 +27,6 @@ else:
 # Helper functions
 # ----------------
 def serp_search(query: str) -> dict:
-    """Call Serper REST API and return JSON results."""
     url = "https://google.serper.dev/search"
     headers = {"X-API-KEY": SERPER_API_KEY}
     params = {"q": query}
@@ -36,7 +35,6 @@ def serp_search(query: str) -> dict:
     return resp.json(), url, params
 
 def call_llm(prompt: str, max_tokens: int = 4096) -> str:
-    """Route prompt to GROQ LLM; raise error if client missing."""
     if not groq_client:
         return "Error: GROQ_API_KEY not provided."
     response = groq_client.chat.completions.create(
@@ -50,12 +48,21 @@ def call_llm(prompt: str, max_tokens: int = 4096) -> str:
 # PII-masking / unmasking helpers
 # --------------------------------
 def mask_pii(text: str) -> tuple[str, dict]:
-    """Ask the LLM to mask PII, then extract and parse the JSON it returns."""
+    """
+    Mask only private or sensitive PII in `text`, leaving
+    public or widely known names/info untouched.
+    Returns (masked_text, mapping).
+    """
     mask_prompt = (
-        "Identify and mask any PII in the following text. "
-        "Replace them with placeholders like <NAME_1>, <EMAIL_1>, <PHONE_1>, etc.\n\n"
+        "Identify and mask any **private or sensitive** PII in the following text.  \n"
+        "- **Do NOT** mask names or details that are publicly known (e.g. public figures, "
+        "company names, known landmarks, public domain info).  \n"
+        "- Only mask personal emails, personal phone numbers, private addresses, "
+        "and other non-public identifiers.  \n\n"
         f"Text:\n'''{text}'''\n\n"
-        "⚠️ Return *only* a JSON object with keys `masked_text` and `mapping`. "
+        "Return *only* a JSON object with keys:\n"
+        "  • `masked_text` (the text with placeholders for masked PII)  \n"
+        "  • `mapping` (dictionary of placeholder → original PII)\n"
         "No extra explanation."
     )
     raw = call_llm(mask_prompt)
@@ -73,7 +80,7 @@ def mask_pii(text: str) -> tuple[str, dict]:
         try:
             data = json.loads(m.group())
         except JSONDecodeError:
-            st.error("PII masking JSON parse failed even after regex. Raw JSON:")
+            st.error("PII masking JSON parse failed after regex. Raw JSON:")
             st.code(m.group())
             raise
 
@@ -86,7 +93,6 @@ def mask_pii(text: str) -> tuple[str, dict]:
     return data["masked_text"], data["mapping"]
 
 def unmask_pii(text: str, mapping: dict) -> str:
-    """Restore placeholders in `text` back to the original PII."""
     for placeholder, original in mapping.items():
         text = text.replace(placeholder, original)
     return text
@@ -105,7 +111,7 @@ def on_enter():
     if not user_msg:
         return
 
-    # 1. Mask user PII
+    # 1. Mask user PII (conditionally)
     masked_query, pii_map = mask_pii(user_msg)
 
     # 2. Perform external search
@@ -130,7 +136,7 @@ def on_enter():
     # 5. Unmask the answer
     final_answer = unmask_pii(masked_answer, pii_map)
 
-    # 6. Save all debug info for this turn only
+    # 6. Save this single-turn debug info
     st.session_state.last_turn = {
         "masked_query": masked_query,
         "pii_map": pii_map,
@@ -156,9 +162,8 @@ st.text_input(
 # --------------------------
 # Render only the most recent turn
 # --------------------------
-if st.session_state.last_turn:
-    turn = st.session_state.last_turn
-
+turn = st.session_state.last_turn
+if turn:
     st.markdown("---")
     st.subheader("🔒 Masked Query")
     st.write(turn["masked_query"])
