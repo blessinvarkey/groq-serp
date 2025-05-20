@@ -9,7 +9,7 @@ from json.decoder import JSONDecodeError
 # Page config
 # -------------
 st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
-st.title("Groq-SERP-llama-3.3-70b Chatbot with Conditional PII Masking")
+st.title("Groq-SERP-llama-3.3-70b Chatbot + PII Masking")
 
 # -------------
 # Load API keys
