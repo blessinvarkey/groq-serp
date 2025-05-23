@@ -6,6 +6,12 @@ import re
 import time
 from json.decoder import JSONDecodeError
 
+# GROQ client & rate-limit exception
+from groq import Groq, RateLimitError
+
+# Phoenix Evals for automated QA/hallucination metrics
+from phoenix import run_evals, QAEvaluator, HallucinationEvaluator
+
 # -------------
 # Page config
 # -------------
@@ -16,25 +22,21 @@ st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
 # --------------------------
 debug_mode = st.sidebar.checkbox("Debug mode", value=False)
 
-if debug_mode:
-    st.sidebar.markdown("### Global PII Mapping")
-    if "global_mapping" in st.session_state:
-        st.sidebar.json(st.session_state.global_mapping)
-    else:
-        st.sidebar.write("⏳ none yet")
-
-# -------------
+# --------------------------
 # Load API keys
-# -------------
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+# --------------------------
+GROQ_API_KEY   = st.secrets.get("GROQ_API_KEY")   or os.getenv("GROQ_API_KEY")
 SERPER_API_KEY = st.secrets.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY")
 
 # Initialize GROQ client
 if GROQ_API_KEY:
-    from groq import Groq, RateLimitError
     groq_client = Groq(api_key=GROQ_API_KEY)
 else:
     groq_client = None
+
+# Initialize Phoenix evaluators
+qa_eval    = QAEvaluator()
+hallu_eval = HallucinationEvaluator()
 
 # ----------------
 # Helper functions
@@ -55,7 +57,7 @@ def call_llm(prompt, max_tokens=4096):
         try:
             resp = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role":"user","content":prompt}],
                 max_tokens=max_tokens
             )
             return resp.choices[0].message.content
@@ -72,7 +74,7 @@ def call_llm(prompt, max_tokens=4096):
 if "global_mapping" not in st.session_state:
     st.session_state.global_mapping = {}
 if "placeholder_counter" not in st.session_state:
-    st.session_state.placeholder_counter = {"NAME": 0, "EMAIL": 0, "PHONE": 0, "ID": 0}
+    st.session_state.placeholder_counter = {"NAME":0,"EMAIL":0,"PHONE":0,"ID":0}
 
 def _next_placeholder(kind):
     st.session_state.placeholder_counter[kind] += 1
@@ -85,23 +87,25 @@ def mask_pii(text):
     mapping = st.session_state.global_mapping
     masked = text
 
-    # deterministic regex for email, phone, IDs
+    # 1) regex for emails
     for match in re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text):
         ph = next((k for k,v in mapping.items() if v==match), None) or _next_placeholder("EMAIL")
         mapping[ph] = match
         masked = masked.replace(match, ph)
 
+    # 2) regex for phone numbers
     for match in re.findall(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", text):
         ph = next((k for k,v in mapping.items() if v==match), None) or _next_placeholder("PHONE")
         mapping[ph] = match
         masked = masked.replace(match, ph)
 
+    # 3) regex for long numeric IDs
     for match in re.findall(r"\b\d{4,}\b", text):
         ph = next((k for k,v in mapping.items() if v==match), None) or _next_placeholder("ID")
         mapping[ph] = match
         masked = masked.replace(match, ph)
 
-    # LLM catch-all
+    # 4) LLM catch-all for anything else
     llm_prompt = (
         "Mask any *other* private or sensitive PII in this text, "
         "but leave public figures and company names untouched.\n\n"
@@ -115,7 +119,7 @@ def mask_pii(text):
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if not m:
             if debug_mode:
-                st.sidebar.error("LLM mask raw output:")
+                st.sidebar.error("LLM mask raw:")
                 st.sidebar.code(raw)
             st.stop()
         data = json.loads(m.group())
@@ -125,6 +129,7 @@ def mask_pii(text):
             mapping[ph] = orig
     masked = data["masked_text"]
 
+    # extract this turn's mapping
     turn_map = {ph: mapping[ph] for ph in data["mapping"]}
     return masked, turn_map
 
@@ -145,25 +150,55 @@ def on_enter():
         return
 
     try:
+        # mask PII
         masked_q, turn_map = mask_pii(user_input)
+
+        # Serper search
         serp_res, serp_url, serp_params = serp_search(masked_q)
 
+        # LLM answer (masked)
         prompt = (
             "You are a helpful assistant. Use these results:\n"
             f"{json.dumps(serp_res)}\n\n"
             f"Question: {masked_q}"
         )
         masked_ans = call_llm(prompt)
+
+        # Phoenix evaluations
+        qa_metrics = run_evals(
+            evaluator=qa_eval,
+            tasks=[{
+                "id": "current_turn",
+                "query": masked_q,
+                "answer": masked_ans,
+                "references": [d.get("snippet","") for d in serp_res.get("organic",[])]
+            }]
+        )
+        hallu_metrics = run_evals(
+            evaluator=hallu_eval,
+            tasks=[{
+                "id": "current_turn",
+                "query": masked_q,
+                "answer": masked_ans,
+                "context": json.dumps(serp_res)
+            }]
+        )
+
+        # unmask answer
         final = unmask_pii(masked_ans, turn_map)
 
+        # store last turn
         st.session_state.last_turn = {
             "masked_query": masked_q,
             "turn_map": turn_map,
             "serp_url": serp_url,
             "serp_params": serp_params,
             "serp_response": serp_res,
+            "qa_metrics": qa_metrics,
+            "hallu_metrics": hallu_metrics,
             "final_answer": final
         }
+
     except RateLimitError:
         st.error("⚠️ Rate limit exceeded. Please wait and try again.")
     except Exception as e:
@@ -172,7 +207,7 @@ def on_enter():
         st.session_state.user_input = ""
 
 # --------------------------
-# Input box
+# Input box (Enter-to-send)
 # --------------------------
 st.text_input(
     "", key="user_input",
@@ -185,8 +220,8 @@ st.text_input(
 # --------------------------
 turn = st.session_state.last_turn
 if turn:
-    # Main UI
-    # st.subheader("✅ Final Answer")
+    # Main UI: only final answer
+    st.subheader("✅ Final Answer")
     st.write(turn["final_answer"])
 
     # Debug sidebar
@@ -203,3 +238,9 @@ if turn:
 
         st.sidebar.markdown("### 📦 SERP Response")
         st.sidebar.json(turn["serp_response"])
+
+        st.sidebar.markdown("### 📊 Phoenix QA Metrics")
+        st.sidebar.json(turn["qa_metrics"])
+
+        st.sidebar.markdown("### ⚠️ Phoenix Hallucination Metrics")
+        st.sidebar.json(turn["hallu_metrics"])
