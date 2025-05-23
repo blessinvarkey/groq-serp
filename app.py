@@ -21,7 +21,7 @@ from phoenix.evals.models.openai import OpenAIModel
 st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
 
 # --------------------------
-# Debug mode toggle in sidebar
+# Debug mode toggle
 # --------------------------
 debug_mode = st.sidebar.checkbox("Debug mode", value=False)
 
@@ -83,7 +83,7 @@ def call_llm(prompt, max_tokens=4096):
                 raise
 
 # ---------------------------------
-# Persistent mapping & placeholder counters
+# Session state for mapping & counts
 # ---------------------------------
 if "global_mapping" not in st.session_state:
     st.session_state.global_mapping = {}
@@ -95,24 +95,22 @@ def _next_placeholder(kind):
     return f"<{kind}_{st.session_state.placeholder_counter[kind]}>"
 
 # --------------------------------
-# PII Masking: regex + LLM catch-all
+# Mask PII: regex + LLM catch-all
 # --------------------------------
 def mask_pii(text):
     mapping = st.session_state.global_mapping
     masked = text
-
-    # 1) Regex masks for emails, phones, IDs
+    # Regex masks
     for pattern, kind in [
         (r"[\w.+-]+@[\w-]+\.[\w.-]+", "EMAIL"),
         (r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", "PHONE"),
         (r"\b\d{4,}\b", "ID")
     ]:
         for match in re.findall(pattern, text):
-            ph = next((k for k,v in mapping.items() if v == match), None) or _next_placeholder(kind)
+            ph = next((k for k,v in mapping.items() if v==match), None) or _next_placeholder(kind)
             mapping[ph] = match
             masked = masked.replace(match, ph)
-
-    # 2) LLM catch-all for remaining PII
+    # LLM catch-all
     llm_prompt = (
         "Mask any other private or sensitive PII in this text, leaving public figures untouched.\n"
         f"Text:\n'''{masked}'''\n"
@@ -125,122 +123,77 @@ def mask_pii(text):
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if not m:
             if debug_mode:
-                st.sidebar.error("Failed to parse LLM mask JSON:")
-                st.sidebar.code(raw)
+                st.error("Parsing PII mask failed:")
+                st.code(raw)
             st.stop()
         data = json.loads(m.group())
-
-    # merge new mappings
     for ph, orig in data["mapping"].items():
         if ph not in mapping:
             mapping[ph] = orig
     masked = data["masked_text"]
-
     turn_map = {ph: mapping[ph] for ph in data["mapping"]}
     return masked, turn_map
 
 
 def unmask_pii(text, turn_map):
-    for ph, orig in turn_map.items():
-        text = text.replace(ph, orig)
+    for ph, orig in turn_map.items(): text = text.replace(ph, orig)
     return text
 
 # --------------------
-# Single-turn storage
+# Single-turn holder
 # --------------------
 if "last_turn" not in st.session_state:
     st.session_state.last_turn = None
 
 # -------------------------
-# Main callback on Enter
+# Callback on Enter
 # -------------------------
 def on_enter():
     user_input = st.session_state.user_input.strip()
-    if not user_input:
-        return
-
-    # Mask and search
+    if not user_input: return
+    # Mask & Search
     masked_q, turn_map = mask_pii(user_input)
     serp_res, serp_url, serp_params = serp_search(masked_q)
-
-    # Get masked answer
+    # Generate masked answer
     llm_prompt = (
         "You are a helpful assistant. Use these Serper results:\n"
         f"{json.dumps(serp_res)}\n\n"
         f"Question: {masked_q}"
     )
     masked_ans = call_llm(llm_prompt)
-
-    # Build DataFrames for evals
-    qa_df = pd.DataFrame([{
-        "input": masked_q,
-        "output": masked_ans,
-        "reference": item.get("snippet", "")
-    } for item in serp_res.get("organic", [])])
-    hallu_df = pd.DataFrame([{
-        "input": masked_q,
-        "output": masked_ans,
-        "context": json.dumps(serp_res)
-    }])
-
-    # Run Phoenix evaluations
+    # Phoenix evals DataFrames
+    qa_df = pd.DataFrame([{"input":masked_q, "output":masked_ans, "reference":item.get("snippet","")}
+                           for item in serp_res.get("organic",[])])
+    hallu_df = pd.DataFrame([{"input":masked_q, "output":masked_ans, "context":json.dumps(serp_res)}])
     qa_metrics    = run_evals(dataframe=qa_df,    evaluators=[qa_eval],    provide_explanation=True)
     hallu_metrics = run_evals(dataframe=hallu_df, evaluators=[hallu_eval], provide_explanation=True)
-
-    # Unmask and store final answer
+    # Unmask & store
     final_ans = unmask_pii(masked_ans, turn_map)
     st.session_state.last_turn = {
-        "masked_query": masked_q,
-        "turn_map": turn_map,
-        "serp_url": serp_url,
-        "serp_params": serp_params,
-        "serp_response": serp_res,
-        "qa_metrics": qa_metrics,
-        "hallu_metrics": hallu_metrics,
-        "final_answer": final_ans
+        "masked_query":masked_q,
+        "turn_map":turn_map,
+        "final_answer":final_ans,
+        "qa_metrics":qa_metrics,
+        "hallu_metrics":hallu_metrics
     }
     st.session_state.user_input = ""
 
 # --------------------------
-# Input widget
+# Input box
 # --------------------------
-st.text_input(
-    "", key="user_input",
-    on_change=on_enter,
-    placeholder="Type your message and press Enter…"
-)
+st.text_input("", key="user_input", on_change=on_enter,
+              placeholder="Type your message and press Enter…")
 
 # --------------------------
-# Render UI
+# Display response + metrics
 # --------------------------
 turn = st.session_state.last_turn
 if turn:
-    st.header("Final Answer")
+    st.subheader("📢 Final Answer")
     st.write(turn["final_answer"])
-
     if debug_mode:
-        st.sidebar.markdown("### Debug Info")
-        st.sidebar.write("**Masked Query:**", turn["masked_query"])
-        st.sidebar.write("**Mapping:**")
-        st.sidebar.json(turn["turn_map"])
-        st.sidebar.write("**SERP Request:**", turn["serp_url"])
-        st.sidebar.json(turn["serp_params"])
-        st.sidebar.write("**SERP Response:**")
-        st.sidebar.json(turn["serp_response"])
-        st.sidebar.write("**QA Metrics:**")
-        # Display QA metrics DataFrame or fallback
-        if hasattr(qa_metrics, 'results'):
-            st.sidebar.dataframe(turn["qa_metrics"].results)
-        elif isinstance(turn["qa_metrics"], pd.DataFrame):
-            st.sidebar.dataframe(turn["qa_metrics"])
-        else:
-            st.sidebar.write(turn["qa_metrics"])
-
-        st.sidebar.write("**Hallucination Metrics:**")
-        # Display hallucination metrics DataFrame or fallback
-        if hasattr(turn["hallu_metrics"], 'results'):
-            st.sidebar.dataframe(turn["hallu_metrics"].results)
-        elif isinstance(turn["hallu_metrics"], pd.DataFrame):
-            st.sidebar.dataframe(turn["hallu_metrics"])
-        else:
-            st.sidebar.write(turn["hallu_metrics"])
+        st.markdown("---")
+        st.subheader("📊 QA Metrics")
+        st.dataframe(turn["qa_metrics"].results if hasattr(turn["qa_metrics"], 'results') else turn["qa_metrics"])
+        st.subheader("⚠️ Hallucination Metrics")
+        st.dataframe(turn["hallu_metrics"].results if hasattr(turn["hallu_metrics"], 'results') else turn["hallu_metrics"])
