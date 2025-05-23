@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import os
 import requests
@@ -8,8 +9,13 @@ from json.decoder import JSONDecodeError
 
 # GROQ client & rate-limit exception
 from groq import Groq, RateLimitError
-# Phoenix Evals imports (install via pip install arize-phoenix-evals)
+
+# OpenAI client (pointed at Groq endpoint)
+import openai
+
+# Phoenix Evals for automated QA/hallucination metrics
 from phoenix.evals import run_evals, QAEvaluator, HallucinationEvaluator
+import pandas as pd
 
 # -------------
 # Page config
@@ -26,17 +32,21 @@ debug_mode = st.sidebar.checkbox("Debug mode", value=False)
 # -------------
 GROQ_API_KEY   = st.secrets.get("GROQ_API_KEY")   or os.getenv("GROQ_API_KEY")
 SERPER_API_KEY = st.secrets.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY")
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
-# Initialize GROQ client
+# Configure OpenAI client to use Groq's OpenAI-compatible endpoint
+# so Phoenix Evals uses the same llama model
+openai.api_key = GROQ_API_KEY
+openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.groq.com/openai/v1")
+
+# Initialize GROQ client for chat completions
 if GROQ_API_KEY:
     groq_client = Groq(api_key=GROQ_API_KEY)
 else:
     groq_client = None
 
-# Initialize Phoenix evaluators
-qa_eval    = QAEvaluator()
-hallu_eval = HallucinationEvaluator()
+# Initialize Phoenix evaluators using Groq's llama-3.3-70b-versatile model
+qa_eval    = QAEvaluator(model_name="llama-3.3-70b-versatile")
+ hll_eval  = HallucinationEvaluator(model_name="llama-3.3-70b-versatile")
 
 # ----------------
 # Helper functions
@@ -48,6 +58,7 @@ def serp_search(query):
     resp = requests.get(url, headers=headers, params=params)
     resp.raise_for_status()
     return resp.json(), url, params
+
 
 def call_llm(prompt, max_tokens=4096):
     if not groq_client:
@@ -75,6 +86,7 @@ if "global_mapping" not in st.session_state:
     st.session_state.global_mapping = {}
 if "placeholder_counter" not in st.session_state:
     st.session_state.placeholder_counter = {"NAME":0,"EMAIL":0,"PHONE":0,"ID":0}
+
 
 def _next_placeholder(kind):
     st.session_state.placeholder_counter[kind] += 1
@@ -129,6 +141,7 @@ def mask_pii(text):
             mapping[ph] = orig
     masked = data["masked_text"]
 
+    # extract this turn's mapping
     turn_map = {ph: mapping[ph] for ph in data["mapping"]}
     return masked, turn_map
 
@@ -163,16 +176,24 @@ def on_enter():
         )
         masked_ans = call_llm(prompt)
 
-        # Phoenix evals
+        # Phoenix evals using Groq's LLaMA model
         qa_metrics = run_evals(
-            dataframe=pd.DataFrame([{"input": masked_q, "output": masked_ans, "reference": d.get("snippet","")} for d in serp_res.get("organic",[])]),
-            evaluators=[qa_eval],
-            provide_explanation=True
+            evaluator=qa_eval,
+            tasks=[{
+                "id": "current_turn",
+                "query": masked_q,
+                "answer": masked_ans,
+                "references": [d.get("snippet", "") for d in serp_res.get("organic", [])]
+            }]
         )
         hallu_metrics = run_evals(
-            dataframe=pd.DataFrame([{"input": masked_q, "output": masked_ans, "context": json.dumps(serp_res)}]),
-            evaluators=[hallu_eval],
-            provide_explanation=True
+            evaluator=hll_eval,
+            tasks=[{
+                "id": "current_turn",
+                "query": masked_q,
+                "answer": masked_ans,
+                "context": json.dumps(serp_res)
+            }]
         )
 
         # Unmask answer
@@ -231,7 +252,8 @@ if turn:
         st.sidebar.json(turn["serp_response"])
 
         st.sidebar.markdown("### 📊 QA Metrics")
-        st.sidebar.write(turn["qa_metrics"].to_dict())
+        st.sidebar.json(turn["qa_metrics"]._asdict() if hasattr(turn["qa_metrics"], '_asdict') else turn["qa_metrics"])
 
         st.sidebar.markdown("### ⚠️ Hallucination Metrics")
-        st.sidebar.write(turn["hallu_metrics"].to_dict())
+        st.sidebar.json(turn["hallu_metrics"]._asdict() if hasattr(turn["hallu_metrics"], '_asdict') else turn["hallu_metrics"])
+```
