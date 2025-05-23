@@ -1,5 +1,5 @@
 streamlit
 requests
 groq
-arize-phoenix-evals   # for phoenix.evals.run_evals, QAEvaluator, HallucinationEvaluator
-pandas                # for constructing DataFrames in run_evals calls
+arize-phoenix-evals   
+pandas                
