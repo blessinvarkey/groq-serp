@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import os
 import requests
@@ -34,7 +33,6 @@ GROQ_API_KEY   = st.secrets.get("GROQ_API_KEY")   or os.getenv("GROQ_API_KEY")
 SERPER_API_KEY = st.secrets.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY")
 
 # Configure OpenAI client to use Groq's OpenAI-compatible endpoint
-# so Phoenix Evals uses the same llama model
 openai.api_key = GROQ_API_KEY
 openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.groq.com/openai/v1")
 
@@ -45,8 +43,8 @@ else:
     groq_client = None
 
 # Initialize Phoenix evaluators using Groq's llama-3.3-70b-versatile model
-qa_eval    = QAEvaluator(model_name="llama-3.3-70b-versatile")
- hll_eval  = HallucinationEvaluator(model_name="llama-3.3-70b-versatile")
+qa_eval    = QAEvaluator(model="llama-3.3-70b-versatile")
+hallu_eval = HallucinationEvaluator(model="llama-3.3-70b-versatile")
 
 # ----------------
 # Helper functions
@@ -187,7 +185,7 @@ def on_enter():
             }]
         )
         hallu_metrics = run_evals(
-            evaluator=hll_eval,
+            evaluator=hallu_eval,
             tasks=[{
                 "id": "current_turn",
                 "query": masked_q,
@@ -196,10 +194,8 @@ def on_enter():
             }]
         )
 
-        # Unmask answer
+        # Unmask and display answer
         final = unmask_pii(masked_ans, turn_map)
-
-        # Store last turn
         st.session_state.last_turn = {
             "masked_query": masked_q,
             "turn_map": turn_map,
@@ -256,4 +252,3 @@ if turn:
 
         st.sidebar.markdown("### ⚠️ Hallucination Metrics")
         st.sidebar.json(turn["hallu_metrics"]._asdict() if hasattr(turn["hallu_metrics"], '_asdict') else turn["hallu_metrics"])
-```
