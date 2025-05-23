@@ -1,5 +1,6 @@
 streamlit
 requests
 groq
-arize-phoenix-evals   
-pandas                
+arize-phoenix-evals
+pandas
+openai
