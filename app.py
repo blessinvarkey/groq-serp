@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import os
 import requests
@@ -223,6 +224,14 @@ if turn:
         st.sidebar.write("**SERP Response:**")
         st.sidebar.json(turn["serp_response"])
         st.sidebar.write("**QA Metrics:**")
-        st.sidebar.dataframe(turn["qa_metrics"])
+        # Display QA metrics object fields
+        if hasattr(turn["qa_metrics"], 'results'):
+            st.sidebar.dataframe(turn["qa_metrics"].results)
+        else:
+            st.sidebar.json(turn["qa_metrics"].to_dict())
         st.sidebar.write("**Hallucination Metrics:**")
-        st.sidebar.dataframe(turn["hallu_metrics"])
+        if hasattr(turn["hallu_metrics"], 'results'):
+            st.sidebar.dataframe(turn["hallu_metrics"].results)
+        else:
+            st.sidebar.json(turn["hallu_metrics"].to_dict())
+```
