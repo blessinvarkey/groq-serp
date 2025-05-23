@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import os
 import requests
@@ -9,10 +10,8 @@ from json.decoder import JSONDecodeError
 # GROQ client & rate-limit exception
 from groq import Groq, RateLimitError
 
-# OpenAI client (pointed at Groq endpoint)
+# Configure Phoenix evals over Groq LLaMA endpoint
 import openai
-
-# Phoenix Evals for automated QA/hallucination metrics
 from phoenix.evals import run_evals, QAEvaluator, HallucinationEvaluator
 import pandas as pd
 
@@ -32,17 +31,14 @@ debug_mode = st.sidebar.checkbox("Debug mode", value=False)
 GROQ_API_KEY   = st.secrets.get("GROQ_API_KEY")   or os.getenv("GROQ_API_KEY")
 SERPER_API_KEY = st.secrets.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY")
 
-# Configure OpenAI client to use Groq's OpenAI-compatible endpoint
+# Point OpenAI client at Groq endpoint for Phoenix
 openai.api_key = GROQ_API_KEY
 openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.groq.com/openai/v1")
 
-# Initialize GROQ client for chat completions
-if GROQ_API_KEY:
-    groq_client = Groq(api_key=GROQ_API_KEY)
-else:
-    groq_client = None
+# Initialize LLM client for chatbot
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Initialize Phoenix evaluators using Groq's llama-3.3-70b-versatile model
+# Instantiate Phoenix evaluators with LLaMA model
 qa_eval    = QAEvaluator(model="llama-3.3-70b-versatile")
 hallu_eval = HallucinationEvaluator(model="llama-3.3-70b-versatile")
 
@@ -60,7 +56,7 @@ def serp_search(query):
 
 def call_llm(prompt, max_tokens=4096):
     if not groq_client:
-        return "Error: missing GROQ_API_KEY."
+        return "Error: GROQ_API_KEY not provided."
     backoff = 1
     for attempt in range(3):
         try:
@@ -78,58 +74,50 @@ def call_llm(prompt, max_tokens=4096):
                 raise
 
 # ---------------------------------
-# Persistent global mapping across turns
+# Persistent mapping & placeholder counters
 # ---------------------------------
 if "global_mapping" not in st.session_state:
     st.session_state.global_mapping = {}
 if "placeholder_counter" not in st.session_state:
-    st.session_state.placeholder_counter = {"NAME":0,"EMAIL":0,"PHONE":0,"ID":0}
-
+    st.session_state.placeholder_counter = {"NAME":0, "EMAIL":0, "PHONE":0, "ID":0}
 
 def _next_placeholder(kind):
     st.session_state.placeholder_counter[kind] += 1
     return f"<{kind}_{st.session_state.placeholder_counter[kind]}>"
 
 # --------------------------------
-# Combined Regex + LLM Masking
+# PII Masking: regex + LLM catch-all
 # --------------------------------
 def mask_pii(text):
     mapping = st.session_state.global_mapping
     masked = text
 
-    # 1) regex for emails
-    for match in re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text):
-        ph = next((k for k,v in mapping.items() if v==match), None) or _next_placeholder("EMAIL")
-        mapping[ph] = match
-        masked = masked.replace(match, ph)
+    # 1) Regex masks
+    for pattern, kind in [
+        (r"[\w.+-]+@[\w-]+\.[\w.-]+", "EMAIL"),
+        (r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", "PHONE"),
+        (r"\b\d{4,}\b", "ID")
+    ]:
+        for match in re.findall(pattern, text):
+            ph = next((k for k,v in mapping.items() if v==match), None) or _next_placeholder(kind)
+            mapping[ph] = match
+            masked = masked.replace(match, ph)
 
-    # 2) regex for phone numbers
-    for match in re.findall(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", text):
-        ph = next((k for k,v in mapping.items() if v==match), None) or _next_placeholder("PHONE")
-        mapping[ph] = match
-        masked = masked.replace(match, ph)
-
-    # 3) regex for long numeric IDs
-    for match in re.findall(r"\b\d{4,}\b", text):
-        ph = next((k for k,v in mapping.items() if v==match), None) or _next_placeholder("ID")
-        mapping[ph] = match
-        masked = masked.replace(match, ph)
-
-    # 4) LLM catch-all for any other private PII
-    llm_prompt = (
-        "Mask any *other* private or sensitive PII in this text, "
-        "but leave public figures and company names untouched.\n\n"
-        f"Text:\n'''{masked}'''\n\n"
-        "Return *only* JSON with keys `masked_text` and `mapping`."
+    # 2) LLM catch-all
+    prompt = (
+        "Mask any other private or sensitive PII in this text,"
+        " leaving public figures untouched.\n"
+        f"Text:\n'''{masked}'''\n"
+        "Return only JSON {masked_text, mapping}."
     )
-    raw = call_llm(llm_prompt)
+    raw = call_llm(prompt)
     try:
         data = json.loads(raw)
     except JSONDecodeError:
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if not m:
             if debug_mode:
-                st.sidebar.error("LLM mask raw:")
+                st.sidebar.error("Failed to parse LLM mask JSON:")
                 st.sidebar.code(raw)
             st.stop()
         data = json.loads(m.group())
@@ -139,7 +127,6 @@ def mask_pii(text):
             mapping[ph] = orig
     masked = data["masked_text"]
 
-    # extract this turn's mapping
     turn_map = {ph: mapping[ph] for ph in data["mapping"]}
     return masked, turn_map
 
@@ -148,74 +135,70 @@ def unmask_pii(text, turn_map):
         text = text.replace(ph, orig)
     return text
 
-# -------------------------
-# Single-turn holder
-# -------------------------
+# --------------------
+# Single-turn storage
+# --------------------
 if "last_turn" not in st.session_state:
     st.session_state.last_turn = None
 
+# -------------------------
+# Main callback on Enter
+# -------------------------
 def on_enter():
     user_input = st.session_state.user_input.strip()
     if not user_input:
         return
 
-    try:
-        # Mask PII
-        masked_q, turn_map = mask_pii(user_input)
+    # 1) Mask PII
+    masked_q, turn_map = mask_pii(user_input)
 
-        # SERP search
-        serp_res, serp_url, serp_params = serp_search(masked_q)
+    # 2) Perform SERP search
+    serp_res, serp_url, serp_params = serp_search(masked_q)
 
-        # LLM answer (masked)
-        prompt = (
-            "You are a helpful assistant. Use these results:\n"
-            f"{json.dumps(serp_res)}\n\n"
-            f"Question: {masked_q}"
-        )
-        masked_ans = call_llm(prompt)
+    # 3) Generate masked answer
+    llm_prompt = (
+        "You are a helpful assistant. Use these results:\n"
+        f"{json.dumps(serp_res)}\n\n"
+        f"Question: {masked_q}"
+    )
+    masked_ans = call_llm(llm_prompt)
 
-        # Phoenix evals using Groq's LLaMA model
-        qa_metrics = run_evals(
-            evaluators=[qa_eval],
-            tasks=[{
-                "id": "current_turn",
-                "query": masked_q,
-                "answer": masked_ans,
-                "references": [d.get("snippet", "") for d in serp_res.get("organic", [])]
-            }]
-        )
-        hallu_metrics = run_evals(
-            evaluators=[hallu_eval],
-            tasks=[{
-                "id": "current_turn",
-                "query": masked_q,
-                "answer": masked_ans,
-                "context": json.dumps(serp_res)
-            }]
-        )
+    # 4) Lighthouse: Phoenix QA & hallucination evals via DataFrame
+    qa_df = pd.DataFrame([{
+        "input": masked_q,
+        "output": masked_ans,
+        "reference": item.get("snippet", "")
+    } for item in serp_res.get("organic", [])])
 
-        # Unmask and display answer
-        final = unmask_pii(masked_ans, turn_map)
-        st.session_state.last_turn = {
-            "masked_query": masked_q,
-            "turn_map": turn_map,
-            "serp_url": serp_url,
-            "serp_params": serp_params,
-            "serp_response": serp_res,
-            "qa_metrics": qa_metrics,
-            "hallu_metrics": hallu_metrics,
-            "final_answer": final
-        }
+    hallu_df = pd.DataFrame([{ 
+        "input": masked_q, 
+        "output": masked_ans, 
+        "context": json.dumps(serp_res)
+    }])
 
-    except RateLimitError:
-        st.error("⚠️ Rate limit exceeded. Please wait and try again.")
-    except Exception as e:
-        st.error(f"Unexpected error: {e}")
-    finally:
-        st.session_state.user_input = ""
+    qa_metrics    = run_evals(dataframe=qa_df,    evaluators=[qa_eval],    provide_explanation=True)
+    hallu_metrics = run_evals(dataframe=hallu_df, evaluators=[hallu_eval], provide_explanation=True)
+
+    # 5) Unmask final answer
+    final_ans = unmask_pii(masked_ans, turn_map)
+
+    # 6) Store for rendering
+    st.session_state.last_turn = {
+        "masked_query": masked_q,
+        "turn_map": turn_map,
+        "serp_url": serp_url,
+        "serp_params": serp_params,
+        "serp_response": serp_res,
+        "qa_metrics": qa_metrics,
+        "hallu_metrics": hallu_metrics,
+        "final_answer": final_ans
+    }
+
+    # Clear input
+    st.session_state.user_input = ""
 
 # --------------------------
-# Input box
+# Input widget
 # --------------------------
 st.text_input(
     "", key="user_input",
@@ -228,27 +211,20 @@ st.text_input(
 # --------------------------
 turn = st.session_state.last_turn
 if turn:
-    # Main UI: only final answer
-    st.subheader("✅ Final Answer")
+    st.header("Final Answer")
     st.write(turn["final_answer"])
 
-    # Debug sidebar
     if debug_mode:
-        st.sidebar.markdown("### 🔒 Masked Query")
-        st.sidebar.write(turn["masked_query"])
-
-        st.sidebar.markdown("### 🗺️ This Turn’s Mapping")
+        st.sidebar.markdown("### Debug Info")
+        st.sidebar.write("**Masked Query:**", turn["masked_query"])
+        st.sidebar.write("**Mapping:**")
         st.sidebar.json(turn["turn_map"])
-
-        st.sidebar.markdown("### 🔎 SERP Request")
-        st.sidebar.write(turn["serp_url"])
+        st.sidebar.write("**SERP URL:**", turn["serp_url"])
         st.sidebar.json(turn["serp_params"])
-
-        st.sidebar.markdown("### 📦 SERP Response")
+        st.sidebar.write("**SERP Response:**")
         st.sidebar.json(turn["serp_response"])
-
-        st.sidebar.markdown("### 📊 QA Metrics")
-        st.sidebar.json(turn["qa_metrics"]._asdict() if hasattr(turn["qa_metrics"], '_asdict') else turn["qa_metrics"])
-
-        st.sidebar.markdown("### ⚠️ Hallucination Metrics")
-        st.sidebar.json(turn["hallu_metrics"]._asdict() if hasattr(turn["hallu_metrics"], '_asdict') else turn["hallu_metrics"])
+        st.sidebar.write("**QA Metrics:**")
+        st.sidebar.json(turn["qa_metrics"])
+        st.sidebar.write("**Hallucination Metrics:**")
+        st.sidebar.json(turn["hallu_metrics"])
+```
