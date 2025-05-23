@@ -8,9 +8,8 @@ from json.decoder import JSONDecodeError
 
 # GROQ client & rate-limit exception
 from groq import Groq, RateLimitError
-
-# Phoenix Evals for automated QA/hallucination metrics
-from phoenix import run_evals, QAEvaluator, HallucinationEvaluator
+# Phoenix Evals imports (install via pip install arize-phoenix-evals)
+from phoenix.evals import run_evals, QAEvaluator, HallucinationEvaluator
 
 # -------------
 # Page config
@@ -22,11 +21,12 @@ st.set_page_config(page_title="Groq-SERP Chatbot", layout="wide")
 # --------------------------
 debug_mode = st.sidebar.checkbox("Debug mode", value=False)
 
-# --------------------------
+# -------------
 # Load API keys
-# --------------------------
+# -------------
 GROQ_API_KEY   = st.secrets.get("GROQ_API_KEY")   or os.getenv("GROQ_API_KEY")
 SERPER_API_KEY = st.secrets.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY")
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 # Initialize GROQ client
 if GROQ_API_KEY:
@@ -105,7 +105,7 @@ def mask_pii(text):
         mapping[ph] = match
         masked = masked.replace(match, ph)
 
-    # 4) LLM catch-all for anything else
+    # 4) LLM catch-all for any other private PII
     llm_prompt = (
         "Mask any *other* private or sensitive PII in this text, "
         "but leave public figures and company names untouched.\n\n"
@@ -129,7 +129,6 @@ def mask_pii(text):
             mapping[ph] = orig
     masked = data["masked_text"]
 
-    # extract this turn's mapping
     turn_map = {ph: mapping[ph] for ph in data["mapping"]}
     return masked, turn_map
 
@@ -150,10 +149,10 @@ def on_enter():
         return
 
     try:
-        # mask PII
+        # Mask PII
         masked_q, turn_map = mask_pii(user_input)
 
-        # Serper search
+        # SERP search
         serp_res, serp_url, serp_params = serp_search(masked_q)
 
         # LLM answer (masked)
@@ -164,30 +163,22 @@ def on_enter():
         )
         masked_ans = call_llm(prompt)
 
-        # Phoenix evaluations
+        # Phoenix evals
         qa_metrics = run_evals(
-            evaluator=qa_eval,
-            tasks=[{
-                "id": "current_turn",
-                "query": masked_q,
-                "answer": masked_ans,
-                "references": [d.get("snippet","") for d in serp_res.get("organic",[])]
-            }]
+            dataframe=pd.DataFrame([{"input": masked_q, "output": masked_ans, "reference": d.get("snippet","")} for d in serp_res.get("organic",[])]),
+            evaluators=[qa_eval],
+            provide_explanation=True
         )
         hallu_metrics = run_evals(
-            evaluator=hallu_eval,
-            tasks=[{
-                "id": "current_turn",
-                "query": masked_q,
-                "answer": masked_ans,
-                "context": json.dumps(serp_res)
-            }]
+            dataframe=pd.DataFrame([{"input": masked_q, "output": masked_ans, "context": json.dumps(serp_res)}]),
+            evaluators=[hallu_eval],
+            provide_explanation=True
         )
 
-        # unmask answer
+        # Unmask answer
         final = unmask_pii(masked_ans, turn_map)
 
-        # store last turn
+        # Store last turn
         st.session_state.last_turn = {
             "masked_query": masked_q,
             "turn_map": turn_map,
@@ -207,7 +198,7 @@ def on_enter():
         st.session_state.user_input = ""
 
 # --------------------------
-# Input box (Enter-to-send)
+# Input box
 # --------------------------
 st.text_input(
     "", key="user_input",
@@ -239,8 +230,8 @@ if turn:
         st.sidebar.markdown("### 📦 SERP Response")
         st.sidebar.json(turn["serp_response"])
 
-        st.sidebar.markdown("### 📊 Phoenix QA Metrics")
-        st.sidebar.json(turn["qa_metrics"])
+        st.sidebar.markdown("### 📊 QA Metrics")
+        st.sidebar.write(turn["qa_metrics"].to_dict())
 
-        st.sidebar.markdown("### ⚠️ Phoenix Hallucination Metrics")
-        st.sidebar.json(turn["hallu_metrics"])
+        st.sidebar.markdown("### ⚠️ Hallucination Metrics")
+        st.sidebar.write(turn["hallu_metrics"].to_dict())
