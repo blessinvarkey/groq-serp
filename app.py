@@ -136,7 +136,6 @@ def mask_pii(text):
             mapping[ph] = orig
     masked = data["masked_text"]
 
-    # only this turn's map
     turn_map = {ph: mapping[ph] for ph in data["mapping"]}
     return masked, turn_map
 
@@ -160,13 +159,9 @@ def on_enter():
     if not user_input:
         return
 
-    # 1) Mask PII
     masked_q, turn_map = mask_pii(user_input)
-
-    # 2) SERP search
     serp_res, serp_url, serp_params = serp_search(masked_q)
 
-    # 3) Chatbot answer on masked query
     llm_prompt = (
         "You are a helpful assistant. Use these Serper results:\n"
         f"{json.dumps(serp_res)}\n\n"
@@ -174,7 +169,6 @@ def on_enter():
     )
     masked_ans = call_llm(llm_prompt)
 
-    # 4) Phoenix Evals metrics
     qa_df = pd.DataFrame([{
         "input": masked_q,
         "output": masked_ans,
@@ -189,10 +183,7 @@ def on_enter():
     qa_metrics    = run_evals(dataframe=qa_df,    evaluators=[qa_eval],    provide_explanation=True)
     hallu_metrics = run_evals(dataframe=hallu_df, evaluators=[hallu_eval], provide_explanation=True)
 
-    # 5) Unmask answer
     final_ans = unmask_pii(masked_ans, turn_map)
-
-    # 6) Store last turn
     st.session_state.last_turn = {
         "masked_query": masked_q,
         "turn_map": turn_map,
@@ -232,6 +223,6 @@ if turn:
         st.sidebar.write("**SERP Response:**")
         st.sidebar.json(turn["serp_response"])
         st.sidebar.write("**QA Metrics:**")
-        st.sidebar.json(turn["qa_metrics"].to_dict())
+        st.sidebar.dataframe(turn["qa_metrics"])
         st.sidebar.write("**Hallucination Metrics:**")
-        st.sidebar.json(turn["hallu_metrics"].to_dict())
+        st.sidebar.dataframe(turn["hallu_metrics"])
