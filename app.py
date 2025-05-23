@@ -33,7 +33,7 @@ GROQ_API_KEY   = st.secrets.get("GROQ_API_KEY")   or os.getenv("GROQ_API_KEY")
 SERPER_API_KEY = st.secrets.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY")
 
 # Configure OpenAI client to use Groq's OpenAI-compatible endpoint
-o penai.api_key = GROQ_API_KEY
+openai.api_key = GROQ_API_KEY
 openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.groq.com/openai/v1")
 
 # Initialize GROQ client for chat completions
