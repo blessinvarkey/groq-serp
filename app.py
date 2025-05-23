@@ -161,20 +161,18 @@ def on_enter():
         f"Question: {masked_q}"
     )
     masked_ans = call_llm(llm_prompt)
-    # Phoenix evals DataFrames
-    qa_df = pd.DataFrame([{"input":masked_q, "output":masked_ans, "reference":item.get("snippet","")}
-                           for item in serp_res.get("organic",[])])
-    hallu_df = pd.DataFrame([{"input":masked_q, "output":masked_ans, "context":json.dumps(serp_res)}])
+    # Phoenix eval DataFrames
+    qa_df = pd.DataFrame([{"input": masked_q, "output": masked_ans, "reference": item.get("snippet","")}
+                           for item in serp_res.get("organic", [])])
+    hallu_df = pd.DataFrame([{"input": masked_q, "output": masked_ans, "context": json.dumps(serp_res)}])
     qa_metrics    = run_evals(dataframe=qa_df,    evaluators=[qa_eval],    provide_explanation=True)
     hallu_metrics = run_evals(dataframe=hallu_df, evaluators=[hallu_eval], provide_explanation=True)
     # Unmask & store
     final_ans = unmask_pii(masked_ans, turn_map)
     st.session_state.last_turn = {
-        "masked_query":masked_q,
-        "turn_map":turn_map,
-        "final_answer":final_ans,
-        "qa_metrics":qa_metrics,
-        "hallu_metrics":hallu_metrics
+        "final_answer": final_ans,
+        "qa_metrics": qa_metrics,
+        "hallu_metrics": hallu_metrics
     }
     st.session_state.user_input = ""
 
@@ -194,6 +192,19 @@ if turn:
     if debug_mode:
         st.markdown("---")
         st.subheader("📊 QA Metrics")
-        st.dataframe(turn["qa_metrics"].results if hasattr(turn["qa_metrics"], 'results') else turn["qa_metrics"])
+        # Extract DataFrame or list
+        if hasattr(turn["qa_metrics"], 'results'):
+            df_qa = turn["qa_metrics"].results
+        elif isinstance(turn["qa_metrics"], pd.DataFrame):
+            df_qa = turn["qa_metrics"]
+        else:
+            df_qa = pd.DataFrame(turn["qa_metrics"])
+        st.dataframe(df_qa)
         st.subheader("⚠️ Hallucination Metrics")
-        st.dataframe(turn["hallu_metrics"].results if hasattr(turn["hallu_metrics"], 'results') else turn["hallu_metrics"])
+        if hasattr(turn["hallu_metrics"], 'results'):
+            df_h = turn["hallu_metrics"].results
+        elif isinstance(turn["hallu_metrics"], pd.DataFrame):
+            df_h = turn["hallu_metrics"]
+        else:
+            df_h = pd.DataFrame(turn["hallu_metrics"])
+        st.dataframe(df_h)
