@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import os
 import requests
@@ -33,7 +34,7 @@ GROQ_API_KEY   = st.secrets.get("GROQ_API_KEY")   or os.getenv("GROQ_API_KEY")
 SERPER_API_KEY = st.secrets.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY")
 
 # Configure OpenAI client to use Groq's OpenAI-compatible endpoint
-openai.api_key = GROQ_API_KEY
+o penai.api_key = GROQ_API_KEY
 openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.groq.com/openai/v1")
 
 # Initialize GROQ client for chat completions
@@ -176,7 +177,7 @@ def on_enter():
 
         # Phoenix evals using Groq's LLaMA model
         qa_metrics = run_evals(
-            evaluator=qa_eval,
+            evaluators=[qa_eval],
             tasks=[{
                 "id": "current_turn",
                 "query": masked_q,
@@ -185,7 +186,7 @@ def on_enter():
             }]
         )
         hallu_metrics = run_evals(
-            evaluator=hallu_eval,
+            evaluators=[hallu_eval],
             tasks=[{
                 "id": "current_turn",
                 "query": masked_q,
@@ -252,3 +253,4 @@ if turn:
 
         st.sidebar.markdown("### ⚠️ Hallucination Metrics")
         st.sidebar.json(turn["hallu_metrics"]._asdict() if hasattr(turn["hallu_metrics"], '_asdict') else turn["hallu_metrics"])
+```
