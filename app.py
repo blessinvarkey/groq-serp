@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import os
 import requests
@@ -227,4 +226,3 @@ if turn:
         st.sidebar.json(turn["qa_metrics"])
         st.sidebar.write("**Hallucination Metrics:**")
         st.sidebar.json(turn["hallu_metrics"])
-```
