@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import os
 import requests
@@ -234,4 +233,3 @@ if turn:
             st.sidebar.dataframe(turn["hallu_metrics"].results)
         else:
             st.sidebar.json(turn["hallu_metrics"].to_dict())
-```
