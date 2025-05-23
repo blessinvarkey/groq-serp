@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import os
 import requests
@@ -253,4 +252,3 @@ if turn:
 
         st.sidebar.markdown("### ⚠️ Hallucination Metrics")
         st.sidebar.json(turn["hallu_metrics"]._asdict() if hasattr(turn["hallu_metrics"], '_asdict') else turn["hallu_metrics"])
-```
