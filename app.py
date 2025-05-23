@@ -159,9 +159,11 @@ def on_enter():
     if not user_input:
         return
 
+    # Mask and search
     masked_q, turn_map = mask_pii(user_input)
     serp_res, serp_url, serp_params = serp_search(masked_q)
 
+    # Get masked answer
     llm_prompt = (
         "You are a helpful assistant. Use these Serper results:\n"
         f"{json.dumps(serp_res)}\n\n"
@@ -169,6 +171,7 @@ def on_enter():
     )
     masked_ans = call_llm(llm_prompt)
 
+    # Build DataFrames for evals
     qa_df = pd.DataFrame([{
         "input": masked_q,
         "output": masked_ans,
@@ -180,9 +183,11 @@ def on_enter():
         "context": json.dumps(serp_res)
     }])
 
+    # Run Phoenix evaluations
     qa_metrics    = run_evals(dataframe=qa_df,    evaluators=[qa_eval],    provide_explanation=True)
     hallu_metrics = run_evals(dataframe=hallu_df, evaluators=[hallu_eval], provide_explanation=True)
 
+    # Unmask and store final answer
     final_ans = unmask_pii(masked_ans, turn_map)
     st.session_state.last_turn = {
         "masked_query": masked_q,
@@ -223,12 +228,19 @@ if turn:
         st.sidebar.write("**SERP Response:**")
         st.sidebar.json(turn["serp_response"])
         st.sidebar.write("**QA Metrics:**")
-        if hasattr(turn["qa_metrics"], 'results'):
+        # Display QA metrics DataFrame or fallback
+        if hasattr(qa_metrics, 'results'):
             st.sidebar.dataframe(turn["qa_metrics"].results)
+        elif isinstance(turn["qa_metrics"], pd.DataFrame):
+            st.sidebar.dataframe(turn["qa_metrics"])
         else:
             st.sidebar.write(turn["qa_metrics"])
+
         st.sidebar.write("**Hallucination Metrics:**")
+        # Display hallucination metrics DataFrame or fallback
         if hasattr(turn["hallu_metrics"], 'results'):
             st.sidebar.dataframe(turn["hallu_metrics"].results)
+        elif isinstance(turn["hallu_metrics"], pd.DataFrame):
+            st.sidebar.dataframe(turn["hallu_metrics"])
         else:
             st.sidebar.write(turn["hallu_metrics"])
